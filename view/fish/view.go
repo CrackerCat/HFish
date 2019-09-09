@@ -7,6 +7,8 @@ import (
 	"HFish/error"
 	"HFish/utils/page"
 	"strconv"
+	"strings"
+	"HFish/utils/log"
 )
 
 // 蜜罐 页面
@@ -19,101 +21,127 @@ func GetFishList(c *gin.Context) {
 	p, _ := c.GetQuery("page")
 	pageSize, _ := c.GetQuery("pageSize")
 	typex, _ := c.GetQuery("type")
+	colony, _ := c.GetQuery("colony")
 	soText, _ := c.GetQuery("so_text")
 
-	pInt, _ := strconv.ParseInt(p, 10, 64)
-	pageSizeInt, _ := strconv.ParseInt(pageSize, 10, 64)
-
-	pageStart := page.Start(pInt, pageSizeInt)
-
-	sql := `select id,type,project_name,agent,ip,ip_info,create_time from hfish_info where 1=1`
-	sqlx := `select count(1) as sum from hfish_info where 1=1`
-	sqlStatus := 0
+	// 拼接 SQL
+	db := dbUtil.DB().Table("hfish_info").Fields("id", "type", "project_name", "agent", "ip", "country", "region", "city", "create_time", "info")
+	dbCount := dbUtil.DB().Table("hfish_info")
 
 	if typex != "all" {
-		sql = sql + ` and type=?`
-		sqlx = sqlx + ` and type=?`
-		sqlStatus = 1
+		db.Where("type", "=", typex)
+		dbCount.Where("type", "=", typex)
+	}
+
+	if colony != "all" {
+		db.Where("agent", "=", colony)
+		dbCount.Where("agent", "=", colony)
 	}
 
 	if soText != "" {
-		sql = sql + ` and (project_name like ? or ip like ?)`
-		sqlx = sqlx + ` and type=?`
-		if sqlStatus == 1 {
-			sqlStatus = 3
-		} else {
-			sqlStatus = 2
-		}
+		db.Where("project_name", "like", "%"+soText+"%").OrWhere("ip", "like", "%"+soText+"%")
+		dbCount.Where("project_name", "like", "%"+soText+"%").OrWhere("ip", "like", "%"+soText+"%")
 	}
 
-	sql = sql + ` ORDER BY id desc LIMIT ?,?;`
+	// 统计查询数量
+	totalCount, errCount := dbCount.Count()
 
-	if sqlStatus == 0 {
-		result := dbUtil.Query(sql, pageStart, pageSizeInt)
-		resultx := dbUtil.Query(sqlx)
-		pageCount := resultx[0]["sum"].(int64)
-		pageCount = page.TotalPage(pageCount, pageSizeInt)
-
-		c.JSON(http.StatusOK, gin.H{
-			"data":      result,
-			"pageCount": pageCount,
-			"page":      p,
-		})
-	} else if sqlStatus == 1 {
-		result := dbUtil.Query(sql, typex, pageStart, pageSizeInt)
-		resultx := dbUtil.Query(sqlx, typex)
-		pageCount := resultx[0]["sum"].(int64)
-		pageCount = page.TotalPage(pageCount, pageSizeInt)
-
-		c.JSON(http.StatusOK, gin.H{
-			"data":      result,
-			"pageCount": pageCount,
-			"page":      p,
-		})
-	} else if sqlStatus == 2 {
-		result := dbUtil.Query(sql, "%"+soText+"%", "%"+soText+"%", pageStart, pageSizeInt)
-		resultx := dbUtil.Query(sqlx, "%"+soText+"%", "%"+soText+"%")
-		pageCount := resultx[0]["sum"].(int64)
-		pageCount = page.TotalPage(pageCount, pageSizeInt)
-
-		c.JSON(http.StatusOK, gin.H{
-			"data":      result,
-			"pageCount": pageCount,
-			"page":      p,
-		})
-	} else if sqlStatus == 3 {
-		result := dbUtil.Query(sql, typex, "%"+soText+"%", "%"+soText+"%", pageStart, pageSizeInt)
-		resultx := dbUtil.Query(sqlx, typex, "%"+soText+"%", "%"+soText+"%")
-		pageCount := resultx[0]["sum"].(int64)
-		pageCount = page.TotalPage(pageCount, pageSizeInt)
-
-		c.JSON(http.StatusOK, gin.H{
-			"data":      result,
-			"pageCount": pageCount,
-			"page":      p,
-		})
+	if errCount != nil {
+		log.Pr("HFish", "127.0.0.1", "统计分页总数失败", errCount)
 	}
+
+	// 查询列表
+	pInt, _ := strconv.Atoi(p)
+	pageSizeInt, _ := strconv.Atoi(pageSize)
+	pageStart := page.Start(pInt, pageSizeInt)
+
+	result, err := db.OrderBy("id desc").Limit(pageSizeInt).Offset(pageStart).Get()
+
+	if err != nil {
+		log.Pr("HFish", "127.0.0.1", "查询上钩信息列表失败", err)
+	}
+
+	totalCountString := strconv.FormatInt(totalCount, 10)
+	totalCountInt, _ := strconv.Atoi(totalCountString)
+
+	pageCount := page.TotalPage(totalCountInt, pageSizeInt)
+
+	data := map[string]interface{}{
+		"result":     result,
+		"pageCount":  pageCount,
+		"totalCount": totalCount,
+		"page":       p,
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"code": error.ErrSuccessCode,
+		"msg":  error.ErrSuccessMsg,
+		"data": data,
+	})
 }
 
 // 删除蜜罐
 func PostFishDel(c *gin.Context) {
 	id := c.PostForm("id")
-	sqlDel := `delete from hfish_info where id=?;`
-	dbUtil.Delete(sqlDel, id)
-	c.JSON(http.StatusOK, error.ErrSuccessNull())
+
+	idx := strings.Split(id, ",")
+	inId := make([]interface{}, 20)
+
+	for _, x := range idx {
+		inId = append(inId, x)
+	}
+
+	_, err := dbUtil.DB().Table("hfish_info").WhereIn("id", inId).Delete()
+
+	if err != nil {
+		log.Pr("HFish", "127.0.0.1", "删除蜜罐失败", err)
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"code": error.ErrSuccessCode,
+		"msg":  error.ErrSuccessMsg,
+	})
 }
 
 // 获取蜜罐信息
 func GetFishInfo(c *gin.Context) {
 	id, _ := c.GetQuery("id")
-	sql := `select info from hfish_info where id=?;`
-	result := dbUtil.Query(sql, id)
-	c.JSON(http.StatusOK, error.ErrSuccess(result))
+
+	result, err := dbUtil.DB().Table("hfish_info").Fields("info").Where("id", "=", id).First()
+
+	if err != nil {
+		log.Pr("HFish", "127.0.0.1", "获取蜜罐信息失败", err)
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"code": error.ErrSuccessCode,
+		"msg":  error.ErrSuccessMsg,
+		"data": result,
+	})
 }
 
-// 获取蜜罐分类信息
+// 获取蜜罐分类信息,集群信息
 func GetFishTypeInfo(c *gin.Context) {
-	sql := `select type from hfish_info GROUP BY type;`
-	result := dbUtil.Query(sql)
-	c.JSON(http.StatusOK, error.ErrSuccess(result))
+	resultType, errType := dbUtil.DB().Table("hfish_info").Fields("type").GroupBy("type").Get()
+
+	if errType != nil {
+		log.Pr("HFish", "127.0.0.1", "获取蜜罐分类失败", errType)
+	}
+
+	resultAgent, errAgent := dbUtil.DB().Table("hfish_info").Fields("agent").GroupBy("agent").Get()
+
+	if errAgent != nil {
+		log.Pr("HFish", "127.0.0.1", "获取集群分类失败", errAgent)
+	}
+
+	data := map[string]interface{}{
+		"resultInfoType":   resultType,
+		"resultColonyName": resultAgent,
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"code": error.ErrSuccessCode,
+		"msg":  error.ErrSuccessMsg,
+		"data": data,
+	})
 }
